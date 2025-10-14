@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 from vector_search import buscar_similares
@@ -14,6 +15,19 @@ if not API_TOKEN:
     raise ValueError("⚠️ ERRO: variável de ambiente API_TOKEN não encontrada!")
 
 app = FastAPI(title="ETA ChatBot API")
+
+origins = [
+    "http://localhost:5173",  # frontend local
+    "https://seu-frontend-render.onrender.com",  # frontend hospedado no Render, se tiver
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # pode usar ["*"] se quiser liberar tudo (somente para teste!)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 security = HTTPBearer()
 
