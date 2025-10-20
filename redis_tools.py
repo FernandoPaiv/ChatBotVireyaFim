@@ -27,7 +27,7 @@ def conectar():
 def connect_redis():
     r = redis.Redis(
         host=os.getenv('host_redis'),
-        port=17128,
+        port=os.getenv('port_redis'),
         password=os.getenv('password'),
         ssl=True
     )
