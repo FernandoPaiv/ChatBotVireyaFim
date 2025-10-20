@@ -6,7 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 from vector_search import buscar_similares
-from chains import chain_rag, chain_router, mgr_assist_chain, judge_chain
+from chains import chain_rag, chain_router, mgr_assist_chain, judge_chain,curador_chain
+from utils import get_session_id,get_memories
 
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
@@ -23,7 +24,7 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # pode usar ["*"] se quiser liberar tudo (somente para teste!)
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,14 +66,20 @@ def fluxo_assesor(user_message):
         {"input": user_message},
         config={'configurable': {"session_id": "ROUTER_SESSION"}},
     )
-
     if 'ROUTE=' in resposta:
-        if 'rag' in resposta.lower():
-            return 'r'
+        route=str(resposta).split('ROUTE=')[1].split('\n')[0]
+        if ',' in route:
+            if 'rag' in route:
+                return 'm,r',resposta
+            elif 'gerente' in route:
+                return 'm,g',resposta
         else:
-            return 'g'
-    else:
-        return resposta
+            if 'rag' in route:
+                return 'r',resposta
+            elif 'gerente' in route:
+                return 'g',resposta
+            else:
+                return 'm',resposta
 
 
 def fluxo_juiz(pergunta, resposta):
@@ -82,35 +89,80 @@ def fluxo_juiz(pergunta, resposta):
     })
     return avaliacao
 
+def fluxo_curardor(pergunta):
+    curadoria = curador_chain.invoke(
+        {"input": pergunta},
+        config={'configurable': {"session_id": "ROUTER_SESSION"}},
+    )
+    return curadoria
+
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
-async def chat_endpoint(data: ChatInput):
+async def chat_endpoint(data: ChatInput, email: str):
     user_input = data.user_message
+    session_id = get_session_id(email)
+    memorias = get_memories(session_id)
+
+    # Monta o prompt inicial
+    user_input = f'Memorias:{memorias}\n{user_input}'
+    user_input = f'Mensagem:{user_input}'
 
     try:
-        rota = fluxo_assesor(user_input)
+        resultado = fluxo_assesor(user_input)
+        rota = resultado[0]
+        resposta = '\n'.join(str(resultado[1]).split('\n')[1:])  # limpa a primeira linha
 
-        if rota == 'r':
-            resposta = fluxo_rag(user_input)
-            conteudo = resposta['output'] if isinstance(resposta, dict) else resposta
-            juizpergunta = fluxo_juiz(user_input, conteudo)
+        # --- ROTAS MÚLTIPLAS ---
+        if rota == 'm,r':
+            curadoria = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
+            resposta_rag = fluxo_rag(resposta)
+            conteudo = resposta_rag['output'] if isinstance(resposta_rag, dict) else resposta_rag
+            conteudo_final = f"{curadoria}\n{conteudo}"
 
-            if 'mensagem correta' in juizpergunta.lower():
-                conteudo = juizpergunta.lower().split('mensagem correta: ')[1]
-                
             resposta_final = chain_router.invoke(
-                {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=rag"},
+                {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=curadoria_rag"},
+                config={'configurable': {"session_id": "ROUTER_SESSION"}},
+            )
+            final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
+            return ChatResponse(resposta=final_text, origem="CURADORIA_RAG")
+
+        elif rota == 'm,g':
+            curadoria = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
+            resposta_gerente = mgr_assist_chain.invoke(
+                {"input": resposta},
+                config={'configurable': {"session_id": "GERENTE_SESSION"}},
+            )
+            conteudo = resposta_gerente['output'] if isinstance(resposta_gerente, dict) else resposta_gerente
+            conteudo_final = f"{curadoria}\n{conteudo}"
+
+            resposta_final = chain_router.invoke(
+                {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=curadoria_gerente"},
+                config={'configurable': {"session_id": "ROUTER_SESSION"}},
+            )
+            final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
+            return ChatResponse(resposta=final_text, origem="CURADORIA_GERENTE")
+
+        # --- ROTA RAG ---
+        elif rota == 'r':
+            resposta_rag = fluxo_rag(resposta)
+            conteudo = resposta_rag['output'] if isinstance(resposta_rag, dict) else resposta_rag
+            juiz = fluxo_juiz(resposta,conteudo)
+            conteudo_final = f"{conteudo}\nAvaliação: {juiz}"
+
+            resposta_final = chain_router.invoke(
+                {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=rag"},
                 config={'configurable': {"session_id": "ROUTER_SESSION"}},
             )
             final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
             return ChatResponse(resposta=final_text, origem="RAG")
 
+        # --- ROTA GERENTE ---
         elif rota == 'g':
-            resposta = mgr_assist_chain.invoke(
-                {"input": user_input},
-                config={"configurable": {"session_id": "GERENTE_SESSION"}},
+            resposta_gerente = mgr_assist_chain.invoke(
+                {"input": resposta},
+                config={'configurable': {"session_id": "GERENTE_SESSION"}},
             )
-            conteudo = resposta['output'] if isinstance(resposta, dict) else resposta
+            conteudo = resposta_gerente['output'] if isinstance(resposta_gerente, dict) else resposta_gerente
 
             resposta_final = chain_router.invoke(
                 {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=gerente"},
@@ -118,14 +170,19 @@ async def chat_endpoint(data: ChatInput):
             )
             final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
             return ChatResponse(resposta=final_text, origem="GERENTE")
+        
+        # --- SOMENTE CURADORIA ---
+        elif rota == 'm':
+            final_text = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
+            return ChatResponse(resposta=final_text, origem="CURADORIA")
 
         else:
-            return ChatResponse(resposta=rota, origem="ASSISTENTE")
+            return ChatResponse(resposta="Fluxo padrão (assistente)", origem="ASSISTENTE")
 
     except Exception as e:
-        return ChatResponse(resposta=f"Erro ao processar: {e}", origem="ERRO")
+        return ChatResponse(resposta=f"Erro ao processar fluxo: {e}", origem="ERRO")
 
 
 if __name__ == "__main__":
-    print("🚀 API do ChatBot ETA iniciando em http://127.0.0.1:8000 ...")
+    print("🚀 API do ChatBot ETA iniciando em http://127.0.0.1:8000/docs ...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
