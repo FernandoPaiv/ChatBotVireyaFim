@@ -80,6 +80,8 @@ def fluxo_assesor(user_message):
                 return 'g',resposta
             else:
                 return 'm',resposta
+    else:
+        return resposta
 
 
 def fluxo_juiz(pergunta, resposta):
@@ -112,7 +114,6 @@ async def chat_endpoint(data: ChatInput, email: str):
         rota = resultado[0]
         resposta = '\n'.join(str(resultado[1]).split('\n')[1:])  # limpa a primeira linha
 
-        # --- ROTAS MÚLTIPLAS ---
         if rota == 'm,r':
             curadoria = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
             resposta_rag = fluxo_rag(resposta)
@@ -171,13 +172,12 @@ async def chat_endpoint(data: ChatInput, email: str):
             final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
             return ChatResponse(resposta=final_text, origem="GERENTE")
         
-        # --- SOMENTE CURADORIA ---
         elif rota == 'm':
             final_text = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
             return ChatResponse(resposta=final_text, origem="CURADORIA")
 
         else:
-            return ChatResponse(resposta="Fluxo padrão (assistente)", origem="ASSISTENTE")
+            return ChatResponse(resposta=resultado, origem="ASSISTENTE")
 
     except Exception as e:
         return ChatResponse(resposta=f"Erro ao processar fluxo: {e}", origem="ERRO")

@@ -83,6 +83,7 @@ Você tem duas funções:
   `ROUTE=gerente,memoria` ou `ROUTE=rag,memoria`.
 - Se for apenas de registro, use apenas `ROUTE=memoria`.
 - Sempre mantenha o formato textual do protocolo abaixo.
+-Perguntas triviais, sobre as memórias do usuário, vc não deve encaminhar para ninguém, deve responder
 
 ### PROTOCOLO DE ENCAMINHAMENTO (texto puro)
 ROUTE=<gerente|rag|memoria|fora_escopo|combinações>  
@@ -150,7 +151,16 @@ shots_roteador=[
     {
         "human": "Quero ver todos os funcionarios.",
          "ai": "ROUTE=gerente\nPERGUNTA_ORIGINAL=Quero ver todos os funcionarios.\nPERSONA={PERSONA_SISTEMA}\nCLARIFY="
+    },
+    {
+        "human": "Qual meu nome?",
+         "ai": "RESPOSTA: Seu nome é..."
+    },
+    {
+        "human": "Qual meu email?",
+         "ai": "RESPOSTA: Seu email é..."
     }
+
 ]
 fewshots_roteador = FewShotChatMessagePromptTemplate(
     examples=shots_roteador,
