@@ -1,12 +1,21 @@
-numpy
-pymongo
-psycopg2-binary
-python-dotenv
-fastapi
-uvicorn
-pydantic
-google-genai
-langchain==0.0.263
-langchain-community>=0.2.0
-langchain-google-genai
-redis
+# Bibliotecas principais
+numpy==2.2.2
+pymongo==4.11.1
+psycopg2-binary==2.9.10
+python-dotenv==1.1.0
+fastapi==0.116.1
+uvicorn==0.35.0
+pydantic==2.11.7
+typing-extensions==4.7.1
+
+# Google Generative AI
+google-genai==1.43.0
+langchain-google-genai==2.1.4
+
+# LangChain
+langchain==0.3.39
+langchain-community==0.3.39
+langchain-core==0.1.8
+
+# Redis
+redis==6.4.0

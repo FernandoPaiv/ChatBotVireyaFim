@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from typing import Any
 from datetime import datetime, timezone
 import json
+from dotenv import load_dotenv
+load_dotenv()
 
 host = os.getenv('host')
 porta = os.getenv('porta')
