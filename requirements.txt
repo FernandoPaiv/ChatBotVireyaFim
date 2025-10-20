@@ -5,9 +5,8 @@ python-dotenv
 fastapi
 uvicorn
 pydantic
-typing-extensions
 google-genai
-langchain
-langchain-core
+langchain>=0.2.0
+langchain-community>=0.2.0
 langchain-google-genai
-langchain-community
+redis
