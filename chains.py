@@ -1,4 +1,4 @@
-from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain.memory import ChatMessageHistory
 import os
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
