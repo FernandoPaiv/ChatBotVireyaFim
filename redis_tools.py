@@ -26,9 +26,9 @@ def conectar():
 
 def connect_redis():
     r = redis.Redis(
-        host="valkey-1db0b73f-germinare-c6e2.j.aivencloud.com",
+        host=os.getenv('host'),
         port=17128,
-        password="AVNS_5YHe6eyXOgLXubJ6PiC",
+        password=os.getenv('password'),
         ssl=True
     )
     return r
