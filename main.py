@@ -5,21 +5,29 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-from vector_search import buscar_similares
-from chains import chain_rag, chain_router, mgr_assist_chain, judge_chain,curador_chain
-from utils import get_session_id,get_memories
 
+# Imports do projeto
+from vector_search import buscar_similares
+from chains import initialize_system   # ⬅️ módulo com a refatoração anterior
+from utils import get_session_id, get_memories
+
+# =============================
+# 🔹 CONFIGURAÇÕES INICIAIS
+# =============================
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 
 if not API_TOKEN:
     raise ValueError("⚠️ ERRO: variável de ambiente API_TOKEN não encontrada!")
 
+# =============================
+# 🔹 CONFIGURAÇÃO DO FASTAPI
+# =============================
 app = FastAPI(title="ETA ChatBot API")
 
 origins = [
-    "http://localhost:5173",  # frontend local
-    "https://seu-frontend-render.onrender.com",  # frontend hospedado no Render, se tiver
+    "http://localhost:5173",
+    "https://seu-frontend-render.onrender.com",
 ]
 
 app.add_middleware(
@@ -43,137 +51,157 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         )
     return True
 
+
+# =============================
+# 🔹 MODELOS Pydantic
+# =============================
+
 class ChatInput(BaseModel):
     user_message: str
-
+    api_key: str  # ⬅️ o usuário envia a chave aqui
+    
 class ChatResponse(BaseModel):
     resposta: str
     origem: str
 
-def fluxo_rag(user_message):
-    documents=buscar_similares(user_message)
-    resposta = chain_rag.invoke(
+
+# =============================
+# 🔹 FLUXOS DE EXECUÇÃO
+# =============================
+
+def fluxo_rag(chains, user_message):
+    documents = buscar_similares(user_message)
+    resposta = chains["rag_chain"].invoke(
         {
             "input": f"Mensagem do usuário: {user_message}\nDocumentos mais recomendados: {documents}"
         },
-        config={'configurable': {"session_id": "RAG_SESSION"}},
+        config={"configurable": {"session_id": "RAG_SESSION"}},
     )
     return resposta
 
 
-def fluxo_assesor(user_message):
-    resposta = chain_router.invoke(
+def fluxo_assesor(chains, user_message):
+    resposta = chains["router_chain"].invoke(
         {"input": user_message},
-        config={'configurable': {"session_id": "ROUTER_SESSION"}},
+        config={"configurable": {"session_id": "ROUTER_SESSION"}},
     )
-    if 'ROUTE=' in resposta:
-        route=str(resposta).split('ROUTE=')[1].split('\n')[0]
-        if ',' in route:
-            if 'rag' in route:
-                return 'm,r',resposta
-            elif 'gerente' in route:
-                return 'm,g',resposta
+    if "ROUTE=" in resposta:
+        route = str(resposta).split("ROUTE=")[1].split("\n")[0]
+        if "," in route:
+            if "rag" in route:
+                return "m,r", resposta
+            elif "gerente" in route:
+                return "m,g", resposta
         else:
-            if 'rag' in route:
-                return 'r',resposta
-            elif 'gerente' in route:
-                return 'g',resposta
+            if "rag" in route:
+                return "r", resposta
+            elif "gerente" in route:
+                return "g", resposta
             else:
-                return 'm',resposta
+                return "m", resposta
     else:
         return resposta
 
 
-def fluxo_juiz(pergunta, resposta):
-    avaliacao = judge_chain.invoke({
+def fluxo_juiz(chains, pergunta, resposta):
+    avaliacao = chains["judge_chain"].invoke({
         "usuario": pergunta,
         "resposta": resposta
     })
     return avaliacao
 
-def fluxo_curardor(pergunta):
-    curadoria = curador_chain.invoke(
+
+def fluxo_curador(chains, pergunta):
+    curadoria = chains["curador_chain"].invoke(
         {"input": pergunta},
-        config={'configurable': {"session_id": "ROUTER_SESSION"}},
+        config={"configurable": {"session_id": "CURADOR_SESSION"}},
     )
     return curadoria
 
 
+# =============================
+# 🔹 ENDPOINT PRINCIPAL
+# =============================
+
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 async def chat_endpoint(data: ChatInput, email: str):
+    """Endpoint principal que executa o fluxo completo"""
     user_input = data.user_message
+    api_key = data.api_key  # ⬅️ pega a chave de API enviada
     session_id = get_session_id(email)
     memorias = get_memories(session_id)
 
-    # Monta o prompt inicial
-    user_input = f'Memorias:{memorias}\n{user_input}'
-    user_input = f'Mensagem:{user_input}'
+    # Inicializa as chains usando a API key do usuário
+    try:
+        chains = initialize_system(api_key)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erro ao inicializar chains: {e}")
+
+    user_input = f"Memorias:{memorias}\nMensagem:{user_input}"
 
     try:
-        resultado = fluxo_assesor(user_input)
+        resultado = fluxo_assesor(chains, user_input)
         rota = resultado[0]
-        resposta = '\n'.join(str(resultado[1]).split('\n')[1:])  # limpa a primeira linha
+        resposta = "\n".join(str(resultado[1]).split("\n")[1:])
 
-        if rota == 'm,r':
-            curadoria = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
-            resposta_rag = fluxo_rag(resposta)
-            conteudo = resposta_rag['output'] if isinstance(resposta_rag, dict) else resposta_rag
+        if rota == "m,r":
+            curadoria = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
+            resposta_rag = fluxo_rag(chains, resposta)
+            conteudo = resposta_rag
             conteudo_final = f"{curadoria}\n{conteudo}"
 
-            resposta_final = chain_router.invoke(
+            resposta_final = chains["router_chain"].invoke(
                 {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=curadoria_rag"},
-                config={'configurable': {"session_id": "ROUTER_SESSION"}},
+                config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
+            final_text = resposta_final
             return ChatResponse(resposta=final_text, origem="CURADORIA_RAG")
 
-        elif rota == 'm,g':
-            curadoria = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
-            resposta_gerente = mgr_assist_chain.invoke(
+        elif rota == "m,g":
+            curadoria = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
+            resposta_gerente = chains["mgr_assist_chain"].invoke(
                 {"input": resposta},
-                config={'configurable': {"session_id": "GERENTE_SESSION"}},
+                config={"configurable": {"session_id": "GERENTE_SESSION"}},
             )
-            conteudo = resposta_gerente['output'] if isinstance(resposta_gerente, dict) else resposta_gerente
+            conteudo = resposta_gerente
             conteudo_final = f"{curadoria}\n{conteudo}"
 
-            resposta_final = chain_router.invoke(
+            resposta_final = chains["router_chain"].invoke(
                 {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=curadoria_gerente"},
-                config={'configurable': {"session_id": "ROUTER_SESSION"}},
+                config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
+            final_text = resposta_final
             return ChatResponse(resposta=final_text, origem="CURADORIA_GERENTE")
 
-        # --- ROTA RAG ---
-        elif rota == 'r':
-            resposta_rag = fluxo_rag(resposta)
-            conteudo = resposta_rag['output'] if isinstance(resposta_rag, dict) else resposta_rag
-            juiz = fluxo_juiz(resposta,conteudo)
+        elif rota == "r":
+            resposta_rag = fluxo_rag(chains, resposta)
+            conteudo = resposta_rag
+            juiz = fluxo_juiz(chains, resposta, conteudo)
             conteudo_final = f"{conteudo}\nAvaliação: {juiz}"
 
-            resposta_final = chain_router.invoke(
+            resposta_final = chains["router_chain"].invoke(
                 {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=rag"},
-                config={'configurable': {"session_id": "ROUTER_SESSION"}},
+                config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
+            final_text = resposta_final
             return ChatResponse(resposta=final_text, origem="RAG")
 
-        # --- ROTA GERENTE ---
-        elif rota == 'g':
-            resposta_gerente = mgr_assist_chain.invoke(
+        elif rota == "g":
+            resposta_gerente = chains["mgr_assist_chain"].invoke(
                 {"input": resposta},
-                config={'configurable': {"session_id": "GERENTE_SESSION"}},
+                config={"configurable": {"session_id": "GERENTE_SESSION"}},
             )
-            conteudo = resposta_gerente['output'] if isinstance(resposta_gerente, dict) else resposta_gerente
+            conteudo = resposta_gerente
 
-            resposta_final = chain_router.invoke(
+            resposta_final = chains["router_chain"].invoke(
                 {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=gerente"},
-                config={'configurable': {"session_id": "ROUTER_SESSION"}},
+                config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final['output'] if isinstance(resposta_final, dict) else resposta_final
+            final_text = resposta_final
             return ChatResponse(resposta=final_text, origem="GERENTE")
-        
-        elif rota == 'm':
-            final_text = fluxo_curardor(f'{resposta}\nSessionID:{session_id}')
+
+        elif rota == "m":
+            final_text = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
             return ChatResponse(resposta=final_text, origem="CURADORIA")
 
         else:
@@ -182,6 +210,10 @@ async def chat_endpoint(data: ChatInput, email: str):
     except Exception as e:
         return ChatResponse(resposta=f"Erro ao processar fluxo: {e}", origem="ERRO")
 
+
+# =============================
+# 🔹 RUN SERVER
+# =============================
 
 if __name__ == "__main__":
     print("🚀 API do ChatBot ETA iniciando em http://127.0.0.1:8000/docs ...")
