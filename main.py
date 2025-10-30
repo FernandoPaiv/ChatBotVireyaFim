@@ -5,24 +5,19 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-
-# Imports do projeto
 from vector_search import buscar_similares
-from chains import initialize_system   # ⬅️ módulo com a refatoração anterior
+from chains import initialize_system
 from utils import get_session_id, get_memories
+from datetime import datetime
 
-# =============================
-# 🔹 CONFIGURAÇÕES INICIAIS
-# =============================
+
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 
 if not API_TOKEN:
     raise ValueError("⚠️ ERRO: variável de ambiente API_TOKEN não encontrada!")
 
-# =============================
-# 🔹 CONFIGURAÇÃO DO FASTAPI
-# =============================
+
 app = FastAPI(title="ETA ChatBot API")
 
 origins = [
@@ -52,22 +47,15 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     return True
 
 
-# =============================
-# 🔹 MODELOS Pydantic
-# =============================
 
 class ChatInput(BaseModel):
     user_message: str
-    api_key: str  # ⬅️ o usuário envia a chave aqui
+    api_key: str
     
 class ChatResponse(BaseModel):
     resposta: str
     origem: str
 
-
-# =============================
-# 🔹 FLUXOS DE EXECUÇÃO
-# =============================
 
 def fluxo_rag(chains, user_message):
     documents = buscar_similares(user_message)
@@ -118,10 +106,6 @@ def fluxo_curador(chains, pergunta):
     )
     return curadoria
 
-
-# =============================
-# 🔹 ENDPOINT PRINCIPAL
-# =============================
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 async def chat_endpoint(data: ChatInput, email: str):
@@ -211,9 +195,12 @@ async def chat_endpoint(data: ChatInput, email: str):
         return ChatResponse(resposta=f"Erro ao processar fluxo: {e}", origem="ERRO")
 
 
-# =============================
-# 🔹 RUN SERVER
-# =============================
+@app.get("/health")
+def health_check():
+    return {
+        "status": "ok",
+        "timestamp": datetime.now()
+    }
 
 if __name__ == "__main__":
     print("🚀 API do ChatBot ETA iniciando em http://127.0.0.1:8000/docs ...")
