@@ -107,19 +107,46 @@ def fluxo_curador(chains, pergunta):
     return curadoria
 
 
+from fastapi import HTTPException, status
+
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 async def chat_endpoint(data: ChatInput, email: str):
     """Endpoint principal que executa o fluxo completo"""
-    user_input = data.user_message
-    api_key = data.api_key  # ⬅️ pega a chave de API enviada
-    session_id = get_session_id(email)
-    memorias = get_memories(session_id)
+    try:
+        user_input = data.user_message
+        api_key = data.api_key
+        
+        try:
+            session_id = get_session_id(email)
+        except Exception:
+            raise HTTPException(
+                status_code=404,
+                detail="Sessão não encontrada para este usuário."
+            )
 
-    # Inicializa as chains usando a API key do usuário
+        try:
+            memorias = get_memories(session_id)
+        except Exception:
+            raise HTTPException(
+                status_code=500,
+                detail="Erro ao recuperar memórias da sessão."
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro na leitura dos dados de entrada: {str(e)}"
+        )
+
     try:
         chains = initialize_system(api_key)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erro ao inicializar chains: {e}")
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API Key inválida ou erro ao inicializar componentes."
+        )
 
     user_input = f"Memorias:{memorias}\nMensagem:{user_input}"
 
@@ -128,18 +155,17 @@ async def chat_endpoint(data: ChatInput, email: str):
         rota = resultado[0]
         resposta = "\n".join(str(resultado[1]).split("\n")[1:])
 
+        # --- Fluxos ---
         if rota == "m,r":
             curadoria = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
             resposta_rag = fluxo_rag(chains, resposta)
-            conteudo = resposta_rag
-            conteudo_final = f"{curadoria}\n{conteudo}"
+            conteudo = f"{curadoria}\n{resposta_rag}"
 
-            resposta_final = chains["router_chain"].invoke(
-                {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=curadoria_rag"},
+            final = chains["router_chain"].invoke(
+                {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=curadoria_rag"},
                 config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final
-            return ChatResponse(resposta=final_text, origem="CURADORIA_RAG")
+            return ChatResponse(resposta=final, origem="CURADORIA_RAG")
 
         elif rota == "m,g":
             curadoria = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
@@ -147,52 +173,52 @@ async def chat_endpoint(data: ChatInput, email: str):
                 {"input": resposta},
                 config={"configurable": {"session_id": "GERENTE_SESSION"}},
             )
-            conteudo = resposta_gerente
-            conteudo_final = f"{curadoria}\n{conteudo}"
+            conteudo = f"{curadoria}\n{resposta_gerente}"
 
-            resposta_final = chains["router_chain"].invoke(
-                {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=curadoria_gerente"},
+            final = chains["router_chain"].invoke(
+                {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=curadoria_gerente"},
                 config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final
-            return ChatResponse(resposta=final_text, origem="CURADORIA_GERENTE")
+            return ChatResponse(resposta=final, origem="CURADORIA_GERENTE")
 
         elif rota == "r":
             resposta_rag = fluxo_rag(chains, resposta)
-            conteudo = resposta_rag
-            juiz = fluxo_juiz(chains, resposta, conteudo)
-            conteudo_final = f"{conteudo}\nAvaliação: {juiz}"
+            juiz = fluxo_juiz(chains, resposta, resposta_rag)
+            conteudo = f"{resposta_rag}\nAvaliação: {juiz}"
 
-            resposta_final = chains["router_chain"].invoke(
-                {"input": f"RESPOSTA_FINAL={conteudo_final}\nORIGEM=rag"},
+            final = chains["router_chain"].invoke(
+                {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=rag"},
                 config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final
-            return ChatResponse(resposta=final_text, origem="RAG")
+            return ChatResponse(resposta=final, origem="RAG")
 
         elif rota == "g":
             resposta_gerente = chains["mgr_assist_chain"].invoke(
                 {"input": resposta},
                 config={"configurable": {"session_id": "GERENTE_SESSION"}},
             )
-            conteudo = resposta_gerente
-
-            resposta_final = chains["router_chain"].invoke(
-                {"input": f"RESPOSTA_FINAL={conteudo}\nORIGEM=gerente"},
+            final = chains["router_chain"].invoke(
+                {"input": f"RESPOSTA_FINAL={resposta_gerente}\nORIGEM=gerente"},
                 config={"configurable": {"session_id": "ROUTER_SESSION"}},
             )
-            final_text = resposta_final
-            return ChatResponse(resposta=final_text, origem="GERENTE")
+            return ChatResponse(resposta=final, origem="GERENTE")
 
         elif rota == "m":
-            final_text = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
-            return ChatResponse(resposta=final_text, origem="CURADORIA")
+            final = fluxo_curador(chains, f"{resposta}\nSessionID:{session_id}")
+            return ChatResponse(resposta=final, origem="CURADORIA")
 
         else:
             return ChatResponse(resposta=resultado, origem="ASSISTENTE")
 
+    except HTTPException:
+        raise
+
     except Exception as e:
-        return ChatResponse(resposta=f"Erro ao processar fluxo: {e}", origem="ERRO")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno ao processar fluxo: {str(e)}"
+        )
+
 
 
 @app.get("/health")
